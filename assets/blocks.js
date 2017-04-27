@@ -466,7 +466,8 @@ modules.define('service-worker', ['i-bem'], function(provide, bem) {
             }
 
             this._serviceWorker
-                .register('./assets/service-worker.js')
+                //.register('./assets/service-worker.js')
+                .register('service-worker.js')
                 .then(function() {
                     console.log('[ServiceWorkerContainer] ServiceWorker is registered!');
                 })
@@ -490,6 +491,7 @@ modules.define('service-worker', ['i-bem'], function(provide, bem) {
 
             this._serviceWorker.ready
                 .then(function(registration) {
+                    console.log("message: ", message);
                     registration.active.postMessage({ message: message, id: id, data: data });
                 });
         }

@@ -4,25 +4,52 @@
  * Сервис-воркер, обеспечивающий оффлайновую работу избранного
  */
 
+/**
+ Избранное сохраняется в indexedDB
+ под ключом: Key:"favorites:NzeQYvVLbZFE4"
+ value: "{
+             "id": "NzeQYvVLbZFE4",
+             "width": 200,
+             "height": 150,
+             "sources": [{
+                 "url": "https: //media0.giphy.com/media/NzeQYvVLbZFE4/200w.webp",
+                 "type": "image/webp"
+             }],
+             "fallback": "https://media0.giphy.com/media/NzeQYvVLbZFE4/200w.gif"
+        }"
+
+
+ */
+
+
 const CACHE_VERSION = '1.0.0-broken';
 
-importScripts('../vendor/kv-keeper.js-1.0.4/kv-keeper.js');
+importScripts('vendor/kv-keeper.js-1.0.4/kv-keeper.js');
 
 
 self.addEventListener('install', event => {
+
     const promise = preCacheAllFavorites()
         // Вопрос №1: зачем нужен этот вызов?
         .then(() => self.skipWaiting())
+
+        // Этот метот позволит насильно устанавливить текущий воркер,
+        // не дожидаясь пока не будут закрыты (или обновлены) страницы, на которых уже работает старый воркер.
+        // Вызов этого метода приведет к вызову события onactivate
+
         .then(() => console.log('[ServiceWorker] Installed!'));
 
     event.waitUntil(promise);
 });
 
 self.addEventListener('activate', event => {
+
     const promise = deleteObsoleteCaches()
         .then(() => {
             // Вопрос №2: зачем нужен этот вызов?
             self.clients.claim();
+            // Позволяет установить воркер как активный (активировать) на всех открытых
+            // страницах того же scope'а (в котором serviceworker) без переоткрытия/перезагрузки страницы
 
             console.log('[ServiceWorker] Activated!');
         });
@@ -30,22 +57,31 @@ self.addEventListener('activate', event => {
     event.waitUntil(promise);
 });
 
+
+
+
 self.addEventListener('fetch', event => {
     const url = new URL(event.request.url);
 
     // Вопрос №3: для всех ли случаев подойдёт такое построение ключа?
     const cacheKey = url.origin + url.pathname;
 
+    // console.log("cacheKey: ", cacheKey);
+
     let response;
+    // Если запрашивается статика, то приоритет Кеш
     if (needStoreForOffline(cacheKey)) {
         response = caches.match(cacheKey)
             .then(cacheResponse => cacheResponse || fetchAndPutToCache(cacheKey, event.request));
+        // Иначе приоритет - Загрузка по сети, а затем кеш
     } else {
         response = fetchWithFallbackToCache(event.request);
     }
 
     event.respondWith(response);
 });
+
+
 
 self.addEventListener('message', event => {
     const promise = handleMessage(event.data);
@@ -73,11 +109,13 @@ function preCacheAllFavorites() {
 // Извлечь из БД добавленные в избранное картинки
 function getAllFavorites() {
     return new Promise((resolve, reject) => {
+
+        // Достать все объекты из БД
         KvKeeper.getKeys((err, keys) => {
             if (err) {
                 return reject(err);
             }
-
+            // Выбрать из них только объекты - Избранные гифки
             const ids = keys
                 .filter(key => key.startsWith('favorites:'))
                 // 'favorites:'.length == 10
@@ -113,6 +151,7 @@ function deleteObsoleteCaches() {
     return caches.keys()
         .then(names => {
             // Вопрос №4: зачем нужна эта цепочка вызовов?
+            // Удалить старый кеш (старый - это отличный от текущей версии)
             return Promise.all(
                 names.filter(name => name !== CACHE_VERSION)
                     .map(name => {
@@ -137,6 +176,19 @@ function fetchAndPutToCache(cacheKey, request) {
             return caches.open(CACHE_VERSION)
                 .then(cache => {
                     // Вопрос №5: для чего нужно клонирование?
+                    // Опираясь только на то, что написано тут ()
+                    // https://developer.mozilla.org/ru/docs/Web/API/Service_Worker_API/Using_Service_Workers
+                    //
+                    // Выдержка из туториала:
+                    // "Клон помещается в кеш, а оригинальный ответ передается браузеру, который передает его странице,
+                    // которая запросила ресурс.
+                    // Почему? Потому, что потоки запроса и ответа могут быть прочитаны только единожды. Чтобы ответ был
+                    // получен браузером и сохранен в кеше — нам нужно клонировать его. Так, оригинальный объект
+                    // отправится браузеру, а клон будет закеширован. Оба они будут прочитаны единожды."
+                    //
+                    // Честно, этот момент я не совсем понял, т.к. пробовал читать response перед клонированием, но
+                    // никаких исключительных ситуаций не происходило
+
                     cache.put(cacheKey, response.clone());
                 })
                 .then(() => response);
