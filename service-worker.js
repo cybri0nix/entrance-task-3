@@ -29,7 +29,7 @@ importScripts('vendor/kv-keeper.js-1.0.4/kv-keeper.js');
 
 self.addEventListener('install', event => {
 
-    const promise = preCacheAllFavorites()
+    const promise = preCacheAllFavorites()  // Взять все ссылки на гифки из избранного и попытаться их скачать
         // Вопрос №1: зачем нужен этот вызов?
         .then(() => self.skipWaiting())
 
@@ -69,12 +69,18 @@ self.addEventListener('fetch', event => {
     // console.log("cacheKey: ", cacheKey);
 
     let response;
-    // Если запрашивается статика, то приоритет Кеш
+
+    // Если запрашивается статика, то пробуем взять из кеша,
+    // если в кеше нет, то пытаемся скачать, а затем закешировать
     if (needStoreForOffline(cacheKey)) {
         response = caches.match(cacheKey)
-            .then(cacheResponse => cacheResponse || fetchAndPutToCache(cacheKey, event.request));
-        // Иначе приоритет - Загрузка по сети, а затем кеш
+            .then(cacheResponse => {
+                return cacheResponse || fetchAndPutToCache(cacheKey, event.request)
+            });
+
     } else {
+        // Иначе, если запрашивается не статика, то
+        // скачиваем ресурс
         response = fetchWithFallbackToCache(event.request);
     }
 
@@ -92,14 +98,17 @@ self.addEventListener('message', event => {
 
 // Положить в новый кеш все добавленные в избранное картинки
 function preCacheAllFavorites() {
-    return getAllFavorites()
+    return getAllFavorites() // Вернет список ссылок на все гифки из избранного (включая фоллбэки на webp)
         .then(urls => Promise.all(
-            urls.map(url => fetch(url)))
+            urls.map(url => fetch(url))) // Каждый ресурс (картинку) пытаемся загрузить по сети
         )
+        // Загруженные картинки пытаемся закешировать
         .then(responses => {
+            // console.log("responses: ", responses);
             return caches.open(CACHE_VERSION)
                 .then(cache => {
                     return Promise.all(
+                        // Пытаемся каждую картинку поместить в кеш по ключу { Ссылка на ресурс : Ответ }
                         responses.map(response => cache.put(response.url, response))
                     );
                 });
@@ -115,14 +124,19 @@ function getAllFavorites() {
             if (err) {
                 return reject(err);
             }
-            // Выбрать из них только объекты - Избранные гифки
+            // Выбрать из них только объекты - Избранные гифки,
+            // и положить только IDшники гифок в массив ids
             const ids = keys
                 .filter(key => key.startsWith('favorites:'))
                 // 'favorites:'.length == 10
+                // Т.к. там ключи вида favorites:dgdfgdfgsdf, то надо отрезать слово favorites: из ключа, тогда останется только id картинки
                 .map(key => key.slice(10));
 
+
+            // Сгруппировать ссылки на ресурсы .gif / .webp для каждой гифки
             Promise.all(ids.map(getFavoriteById))
                 .then(urlGroups => {
+                    // Объединить ссылки на гифки и webp фоллбэки в один массив
                     return urlGroups.reduce((res, urls) => res.concat(urls), []);
                 })
                 .then(resolve, reject);
@@ -201,8 +215,19 @@ function fetchAndPutToCache(cacheKey, request) {
 
 // Попытаться скачать, при неудаче обратиться в кеш
 function fetchWithFallbackToCache(request) {
-    return fetch(request)
+    return fetch(request) // Пробуем скачать ресурс
+
+        // СЛИШКОМ ДОРОГО, кешировать картинку всегда
+        .then(response => {
+            return caches.open(CACHE_VERSION)
+                .then(cache => {
+                    console.log("Cached: ", request.url);
+                    cache.put(request.url, response.clone());
+                })
+                .then(() => response);
+        })
         .catch(() => {
+            // В случае неудачи, пытаемся отдать ресурс из кеша
             console.log('[ServiceWorker] Fallback to offline cache:', request.url);
             return caches.match(request.url);
         });
@@ -234,7 +259,9 @@ function handleFavoriteAdd(id, data) {
             );
 
             return Promise
-                .all(urls.map(url => fetch(url)))
+                .all(
+                    urls.map(url => fetch(url))
+                )
                 .then(responses => {
                     return Promise.all(
                         responses.map(response => cache.put(response.url, response))
